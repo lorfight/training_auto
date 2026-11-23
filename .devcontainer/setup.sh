@@ -2,45 +2,85 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# ==========================================
-# Robot Framework + Selenium + Chrome + VNC
-# GitHub Codespaces initialization
-# ==========================================
+# ==========================================================
+# Robot Framework + Selenium + Google Chrome + VNC
+# GitHub Codespaces Environment Setup
+#
+# - Automatically prepares the environment on startup.
+# - Starts Xvfb, Openbox, x11vnc and noVNC.
+# - Does NOT execute Robot Framework tests.
+# ==========================================================
 
-PROJECT_DIR="/workspaces/training_auto"
+# ----------------------------------------------------------
+# 1. Project configuration
+# ----------------------------------------------------------
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
 REQUIREMENTS="$PROJECT_DIR/requirements.txt"
 
 DISPLAY_NUM=":1"
 VNC_PORT=5900
 NOVNC_PORT=6080
+NOVNC_WEB="/usr/share/novnc"
 
+export DISPLAY="$DISPLAY_NUM"
 export DEBIAN_FRONTEND=noninteractive
 
-log()  { echo -e "\n\033[1;34m[INFO]\033[0m $*"; }
-ok()   { echo -e "\033[1;32m[OK]\033[0m $*"; }
-warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
-fail() { echo -e "\033[1;31m[ERROR]\033[0m $*" >&2; exit 1; }
+PYTHON="$(command -v python3 || true)"
+
+# ----------------------------------------------------------
+# 2. Logging
+# ----------------------------------------------------------
+
+log() {
+    echo -e "\n\033[1;34m[INFO]\033[0m $*"
+}
+
+ok() {
+    echo -e "\033[1;32m[OK]\033[0m $*"
+}
+
+warn() {
+    echo -e "\033[1;33m[WARN]\033[0m $*"
+}
+
+fail() {
+    echo -e "\033[1;31m[ERROR]\033[0m $*" >&2
+    exit 1
+}
+
+# ----------------------------------------------------------
+# 3. Sudo configuration
+# ----------------------------------------------------------
+
+if [[ "$EUID" -eq 0 ]]; then
+    SUDO=()
+elif command -v sudo >/dev/null 2>&1; then
+    SUDO=(sudo)
+else
+    fail "sudo is required to install system dependencies."
+fi
 
 cd "$PROJECT_DIR"
 
-# ==========================================
-# 1. Check Python
-# ==========================================
+# ----------------------------------------------------------
+# 4. Check Python
+# ----------------------------------------------------------
 
 log "Checking Python..."
 
-command -v python3 >/dev/null 2>&1 || fail "Python3 not found."
+[[ -n "$PYTHON" ]] || fail "Python3 not found."
 
-python3 --version
+"$PYTHON" --version
 
-# ==========================================
-# 2. Install missing system dependencies
-# ==========================================
+# ----------------------------------------------------------
+# 5. Install missing system dependencies
+# ----------------------------------------------------------
 
 log "Checking system dependencies..."
 
-APT_PACKAGES=(
+PACKAGES=(
     python3-venv
     python3-pip
     xvfb
@@ -54,109 +94,108 @@ APT_PACKAGES=(
     wget
     ca-certificates
     fonts-liberation
-    fonts-noto-color-emoji
+    fonts-dejavu-core
+    iproute2
+    procps
 )
 
 MISSING_PACKAGES=()
 
-for pkg in "${APT_PACKAGES[@]}"; do
-    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null |
-        grep -q "install ok installed"; then
-        MISSING_PACKAGES+=("$pkg")
+for package in "${PACKAGES[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
+        | grep -q "install ok installed"; then
+        MISSING_PACKAGES+=("$package")
     fi
 done
 
-if (( ${#MISSING_PACKAGES[@]} > 0 )); then
+if [[ ${#MISSING_PACKAGES[@]} -gt 0 ]]; then
     log "Installing missing packages: ${MISSING_PACKAGES[*]}"
 
-    sudo apt-get update
-    sudo apt-get install -y "${MISSING_PACKAGES[@]}"
+    "${SUDO[@]}" apt-get update
+
+    "${SUDO[@]}" apt-get install -y \
+        "${MISSING_PACKAGES[@]}"
 else
     ok "All system dependencies already installed."
 fi
 
-# ==========================================
-# 3. Create Python virtual environment
-# ==========================================
+# ----------------------------------------------------------
+# 6. Create Python virtual environment
+# ----------------------------------------------------------
 
 log "Checking Python virtual environment..."
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-    python3 -m venv "$VENV_DIR"
-    ok "Virtual environment created."
+    log "Creating virtual environment..."
+
+    "$PYTHON" -m venv "$VENV_DIR"
 else
     ok "Virtual environment already exists."
 fi
 
 PYTHON="$VENV_DIR/bin/python"
 
-# ==========================================
-# 4. Install Python requirements
-# ==========================================
+# ----------------------------------------------------------
+# 7. Install Robot Framework dependencies
+# ----------------------------------------------------------
 
 log "Checking Python libraries..."
 
-[[ -f "$REQUIREMENTS" ]] || fail "requirements.txt not found."
+[[ -f "$REQUIREMENTS" ]] \
+    || fail "requirements.txt not found: $REQUIREMENTS"
 
-if ! "$PYTHON" -c \
-    "import robot, selenium, SeleniumLibrary" >/dev/null 2>&1; then
+"$PYTHON" -m pip install \
+    --disable-pip-version-check \
+    -r "$REQUIREMENTS"
 
-    log "Installing Robot Framework dependencies..."
-    "$PYTHON" -m pip install -r "$REQUIREMENTS"
-else
-    ok "Robot Framework dependencies already installed."
-fi
+"$PYTHON" -m pip check
 
-"$PYTHON" -m pip check || fail "Python dependency conflicts detected."
+ok "Robot Framework dependencies ready."
 
-# ==========================================
-# 5. Install Google Chrome if missing
-# ==========================================
+# ----------------------------------------------------------
+# 8. Install Google Chrome if missing
+# ----------------------------------------------------------
 
 log "Checking Google Chrome..."
 
-if command -v google-chrome-stable >/dev/null 2>&1; then
-    BROWSER="$(command -v google-chrome-stable)"
-elif command -v google-chrome >/dev/null 2>&1; then
-    BROWSER="$(command -v google-chrome)"
-elif command -v chromium >/dev/null 2>&1; then
-    BROWSER="$(command -v chromium)"
-elif command -v chromium-browser >/dev/null 2>&1; then
-    BROWSER="$(command -v chromium-browser)"
-else
-    ARCH="$(dpkg --print-architecture)"
-
-    [[ "$ARCH" == "amd64" ]] || fail \
-        "Automatic Chrome installation requires amd64."
-
+if ! command -v google-chrome-stable >/dev/null 2>&1; then
     log "Installing Google Chrome..."
 
-    TMP_DEB="$(mktemp --suffix=.deb)"
+    ARCH="$(dpkg --print-architecture)"
 
-    wget -q \
+    [[ "$ARCH" == "amd64" ]] \
+        || fail "Automatic Chrome installation currently supports amd64 only."
+
+    CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
+
+    curl -fsSL \
         https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-        -O "$TMP_DEB"
+        -o "$CHROME_DEB"
 
-    sudo apt-get install -y "$TMP_DEB"
+    "${SUDO[@]}" apt-get install -y "$CHROME_DEB"
 
-    rm -f "$TMP_DEB"
-
-    BROWSER="$(command -v google-chrome-stable)"
+    rm -f "$CHROME_DEB"
+else
+    ok "Browser found: $(command -v google-chrome-stable)"
 fi
 
-ok "Browser found: $BROWSER"
-"$BROWSER" --version || true
+BROWSER="$(command -v google-chrome-stable)"
 
-# ==========================================
-# 6. Start Xvfb
-# ==========================================
+"$BROWSER" --version
+
+# ----------------------------------------------------------
+# 9. Start Xvfb
+# ----------------------------------------------------------
 
 log "Checking Xvfb..."
 
-if ! pgrep -f "^Xvfb ${DISPLAY_NUM} " >/dev/null; then
+if ! pgrep -f "^Xvfb ${DISPLAY_NUM} " >/dev/null 2>&1; then
     nohup Xvfb "$DISPLAY_NUM" \
         -screen 0 1920x1080x24 \
-        -ac +extension GLX +render -noreset \
+        -ac \
+        +extension GLX \
+        +render \
+        -noreset \
         >/tmp/xvfb.log 2>&1 &
 
     sleep 2
@@ -166,27 +205,47 @@ fi
 
 export DISPLAY="$DISPLAY_NUM"
 
-DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 \
-    || fail "Xvfb is not responding."
+# Wait for X Server
+X_READY=false
 
-# ==========================================
-# 7. Start Openbox
-# ==========================================
+for i in {1..15}; do
+    if DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1; then
+        X_READY=true
+        break
+    fi
+
+    sleep 1
+done
+
+[[ "$X_READY" == true ]] \
+    || fail "Xvfb is not responding. Check /tmp/xvfb.log."
+
+ok "Xvfb is ready on $DISPLAY_NUM."
+
+# ----------------------------------------------------------
+# 10. Start Openbox
+# ----------------------------------------------------------
 
 log "Checking Openbox..."
 
-if ! pgrep -x openbox >/dev/null; then
-    nohup openbox --display "$DISPLAY_NUM" \
+if ! pgrep -x openbox >/dev/null 2>&1; then
+    nohup env DISPLAY="$DISPLAY_NUM" openbox \
         >/tmp/openbox.log 2>&1 &
 
-    sleep 1
+    sleep 2
 else
     ok "Openbox already running."
 fi
 
-# ==========================================
-# 8. Start x11vnc
-# ==========================================
+if ! pgrep -x openbox >/dev/null 2>&1; then
+    warn "Openbox did not start. Check /tmp/openbox.log."
+else
+    ok "Openbox is running."
+fi
+
+# ----------------------------------------------------------
+# 11. Start x11vnc
+# ----------------------------------------------------------
 
 log "Checking x11vnc..."
 
@@ -206,16 +265,25 @@ else
     ok "x11vnc already running."
 fi
 
-# ==========================================
-# 9. Start Websockify / noVNC
-# ==========================================
+ss -lnt | grep -q ":${VNC_PORT} " \
+    || fail "x11vnc failed to start. Check /tmp/x11vnc.log."
+
+ok "x11vnc is ready on port $VNC_PORT."
+
+# ----------------------------------------------------------
+# 12. Start noVNC / Websockify
+# ----------------------------------------------------------
 
 log "Checking noVNC..."
 
+[[ -f "$NOVNC_WEB/vnc.html" ]] \
+    || fail "noVNC web interface not found: $NOVNC_WEB/vnc.html"
+
 if ! ss -lnt | grep -q ":${NOVNC_PORT} "; then
     nohup websockify \
-        --web=/usr/share/novnc \
-        "$NOVNC_PORT" "localhost:$VNC_PORT" \
+        --web="$NOVNC_WEB" \
+        "$NOVNC_PORT" \
+        "localhost:$VNC_PORT" \
         >/tmp/websockify.log 2>&1 &
 
     sleep 2
@@ -223,15 +291,51 @@ else
     ok "noVNC already running."
 fi
 
-# ==========================================
-# 10. Final verification
-# ==========================================
+ss -lnt | grep -q ":${NOVNC_PORT} " \
+    || fail "noVNC failed to start. Check /tmp/websockify.log."
+
+curl -fsS \
+    "http://localhost:${NOVNC_PORT}/vnc.html" \
+    >/dev/null \
+    || fail "noVNC HTTP check failed."
+
+ok "noVNC is ready on port $NOVNC_PORT."
+
+# ----------------------------------------------------------
+# 13. Configure terminal environment
+# ----------------------------------------------------------
+
+log "Configuring terminal environment..."
+
+BASHRC="$HOME/.bashrc"
+PROFILE="$HOME/.profile"
+
+if ! grep -qF "# BEGIN TRAINING_AUTO_ENV" "$BASHRC" 2>/dev/null; then
+    cat >> "$BASHRC" <<EOF
+
+# BEGIN TRAINING_AUTO_ENV
+export PATH="$VENV_DIR/bin:\$PATH"
+export DISPLAY="$DISPLAY_NUM"
+# END TRAINING_AUTO_ENV
+EOF
+fi
+
+# Apply environment to the current setup process.
+export PATH="$VENV_DIR/bin:$PATH"
+export DISPLAY="$DISPLAY_NUM"
+
+ok "Terminal environment configured."
+
+# ----------------------------------------------------------
+# 14. Final verification
+# ----------------------------------------------------------
 
 log "Checking final environment..."
 
 "$PYTHON" -m robot --version
 
 "$PYTHON" -c "import selenium; print('Selenium:', selenium.__version__)"
+
 "$PYTHON" -c "import SeleniumLibrary; print('SeleniumLibrary: OK')"
 
 DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null \
@@ -243,34 +347,31 @@ ss -lnt | grep -q ":${VNC_PORT} " \
 ss -lnt | grep -q ":${NOVNC_PORT} " \
     || fail "noVNC port unavailable."
 
-curl -fsS "http://localhost:${NOVNC_PORT}/vnc.html" \
-    >/dev/null || fail "noVNC HTTP check failed."
+curl -fsS \
+    "http://localhost:${NOVNC_PORT}/vnc.html" \
+    >/dev/null \
+    || fail "noVNC HTTP check failed."
 
-# ==========================================
-# 11. Configure terminal environment
-# ==========================================
+# ----------------------------------------------------------
+# 15. Ready
+# ----------------------------------------------------------
 
-BASHRC="$HOME/.bashrc"
-
-if ! grep -qF "# TRAINING_AUTO_ENV" "$BASHRC" 2>/dev/null; then
-    cat >> "$BASHRC" <<EOF
-
-# TRAINING_AUTO_ENV
-export PATH="$VENV_DIR/bin:\$PATH"
-export DISPLAY=":1"
-EOF
-fi
-
-ok "======================================"
+ok "=========================================="
 ok "AUTOMATION ENVIRONMENT READY"
-ok "======================================"
+ok "=========================================="
 
-echo "Python : $PYTHON"
-echo "Robot  : $VENV_DIR/bin/robot"
-echo "Browser: $BROWSER"
-echo "Display: $DISPLAY_NUM"
-echo "VNC    : localhost:$VNC_PORT"
-echo "noVNC  : port $NOVNC_PORT"
+echo
+echo "Project : $PROJECT_DIR"
+echo "Python  : $PYTHON"
+echo "Robot   : $VENV_DIR/bin/robot"
+echo "Browser : $BROWSER"
+echo "Display : $DISPLAY_NUM"
+echo "VNC     : localhost:$VNC_PORT"
+echo "noVNC   : port $NOVNC_PORT"
 echo
 echo "Open the PORTS tab and access port 6080."
-echo "Run your Robot tests manually."
+echo "Robot tests will NOT run automatically."
+echo
+echo "Run tests manually:"
+echo "robot -d results test/smoke.robot"
+echo

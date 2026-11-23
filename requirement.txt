@@ -1,8 +1,0 @@
-
-# Robot Framework
-robotframework>=7.0,<8.0
-
-# Selenium UI Automation
-robotframework-seleniumlibrary>=6.0,<7.0
-selenium>=4.20,<5.0
-
