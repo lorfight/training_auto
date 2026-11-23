@@ -1,12 +1,24 @@
 
 {
   "name": "Robot Automation Workspace",
-  "forwardPorts": [6080],
+  "forwardPorts": [6080, 8000],
   "portsAttributes": {
     "6080": {
       "label": "noVNC Desktop",
       "onAutoForward": "openBrowser",
       "visibility": "private"
+    },
+    "8000": {
+      "label": "Robot Test Reports",
+      "onAutoForward": "openBrowser",
+      "visibility": "private"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "d-biehl.robotcode"
+      ]
     }
   },
   "postCreateCommand": "bash .devcontainer/setup.sh",
