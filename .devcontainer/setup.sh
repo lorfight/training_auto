@@ -8,6 +8,8 @@ set -Eeuo pipefail
 #
 # - Automatically prepares the environment on startup.
 # - Starts Xvfb, Openbox, x11vnc and noVNC.
+# - Configures DISPLAY and Python virtual environment.
+# - Verifies Selenium can launch Chrome.
 # - Does NOT execute Robot Framework tests.
 # ==========================================================
 
@@ -100,6 +102,14 @@ done
 
 if [[ ${#MISSING_PACKAGES[@]} -gt 0 ]]; then
     log "Installing missing packages: ${MISSING_PACKAGES[*]}"
+
+    # Disable broken Yarn repository (not required).
+    YARN_SOURCE="/etc/apt/sources.list.d/yarn.list"
+
+    if [[ -f "$YARN_SOURCE" ]]; then
+        log "Disabling unnecessary Yarn repository..."
+        "${SUDO[@]}" mv "$YARN_SOURCE" "${YARN_SOURCE}.disabled"
+    fi
 
     "${SUDO[@]}" apt-get update
 
@@ -226,7 +236,6 @@ if pgrep -x x11vnc >/dev/null 2>&1 \
 fi
 
 if [[ "$X11VNC_RUNNING" != true ]]; then
-    # Remove stale x11vnc processes only when the VNC port is unavailable.
     if ! port_listening "$VNC_PORT"; then
         pkill -x x11vnc 2>/dev/null || true
         sleep 1
@@ -316,16 +325,21 @@ BASHRC="$HOME/.bashrc"
 
 touch "$BASHRC"
 
-if ! grep -qF "# BEGIN TRAINING_AUTO_ENV" "$BASHRC"; then
-    cat >> "$BASHRC" <<EOF
+# Remove old managed block to avoid duplicate entries.
+if grep -qF "# BEGIN TRAINING_AUTO_ENV" "$BASHRC"; then
+    sed -i '/# BEGIN TRAINING_AUTO_ENV/,/# END TRAINING_AUTO_ENV/d' "$BASHRC"
+fi
+
+# Add the latest environment configuration.
+cat >> "$BASHRC" <<EOF
 
 # BEGIN TRAINING_AUTO_ENV
 export PATH="$VENV_DIR/bin:\$PATH"
 export DISPLAY="$DISPLAY_NUM"
 # END TRAINING_AUTO_ENV
 EOF
-fi
 
+# Apply environment to the current setup process.
 export PATH="$VENV_DIR/bin:$PATH"
 export DISPLAY="$DISPLAY_NUM"
 
@@ -357,6 +371,40 @@ curl -fsS \
     >/dev/null \
     || fail "noVNC HTTP check failed."
 
+# 15. Verify Selenium + Chrome
+log "Checking Selenium + Chrome..."
+
+"$PYTHON" - <<'PY'
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+
+options = Options()
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--disable-gpu")
+
+driver = None
+
+try:
+    driver = webdriver.Chrome(options=options)
+    driver.get("https://example.com")
+
+    assert driver.title == "Example Domain", (
+        f"Unexpected page title: {driver.title}"
+    )
+
+    print("Chrome:", driver.capabilities.get("browserVersion"))
+    print("Title:", driver.title)
+    print("URL:", driver.current_url)
+
+finally:
+    if driver:
+        driver.quit()
+PY
+
+ok "Selenium + Chrome verification passed."
+
+# 16. Final result
 ok "=========================================="
 ok "AUTOMATION ENVIRONMENT READY"
 ok "=========================================="
