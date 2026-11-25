@@ -348,7 +348,9 @@ ok "Terminal environment configured."
 # 14. Final verification
 log "Checking final environment..."
 
-"$PYTHON" -m robot --version
+"$PYTHON" -c "import robot; print('Robot Framework:', robot.__version__)"
+
+"$PYTHON" -c "import selenium; print('Selenium:', selenium.__version__)"
 
 "$PYTHON" -c "import selenium; print('Selenium:', selenium.__version__)"
 
