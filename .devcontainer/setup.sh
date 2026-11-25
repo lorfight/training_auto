@@ -11,10 +11,7 @@ set -Eeuo pipefail
 # - Does NOT execute Robot Framework tests.
 # ==========================================================
 
-# ----------------------------------------------------------
 # 1. Project configuration
-# ----------------------------------------------------------
-
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
 REQUIREMENTS="$PROJECT_DIR/requirements.txt"
@@ -29,10 +26,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 PYTHON="$(command -v python3 || true)"
 
-# ----------------------------------------------------------
 # 2. Logging
-# ----------------------------------------------------------
-
 log() {
     echo -e "\n\033[1;34m[INFO]\033[0m $*"
 }
@@ -50,10 +44,7 @@ fail() {
     exit 1
 }
 
-# ----------------------------------------------------------
 # 3. Sudo configuration
-# ----------------------------------------------------------
-
 if [[ "$EUID" -eq 0 ]]; then
     SUDO=()
 elif command -v sudo >/dev/null 2>&1; then
@@ -64,20 +55,19 @@ fi
 
 cd "$PROJECT_DIR"
 
-# ----------------------------------------------------------
-# 4. Check Python
-# ----------------------------------------------------------
+# Helper: check whether a TCP port is listening
+port_listening() {
+    ss -H -lnt "sport = :$1" 2>/dev/null | grep -q .
+}
 
+# 4. Check Python
 log "Checking Python..."
 
 [[ -n "$PYTHON" ]] || fail "Python3 not found."
 
 "$PYTHON" --version
 
-# ----------------------------------------------------------
 # 5. Install missing system dependencies
-# ----------------------------------------------------------
-
 log "Checking system dependencies..."
 
 PACKAGES=(
@@ -119,15 +109,11 @@ else
     ok "All system dependencies already installed."
 fi
 
-# ----------------------------------------------------------
 # 6. Create Python virtual environment
-# ----------------------------------------------------------
-
 log "Checking Python virtual environment..."
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     log "Creating virtual environment..."
-
     "$PYTHON" -m venv "$VENV_DIR"
 else
     ok "Virtual environment already exists."
@@ -135,10 +121,7 @@ fi
 
 PYTHON="$VENV_DIR/bin/python"
 
-# ----------------------------------------------------------
 # 7. Install Robot Framework dependencies
-# ----------------------------------------------------------
-
 log "Checking Python libraries..."
 
 [[ -f "$REQUIREMENTS" ]] \
@@ -152,10 +135,7 @@ log "Checking Python libraries..."
 
 ok "Robot Framework dependencies ready."
 
-# ----------------------------------------------------------
 # 8. Install Google Chrome if missing
-# ----------------------------------------------------------
-
 log "Checking Google Chrome..."
 
 if ! command -v google-chrome-stable >/dev/null 2>&1; then
@@ -180,13 +160,9 @@ else
 fi
 
 BROWSER="$(command -v google-chrome-stable)"
-
 "$BROWSER" --version
 
-# ----------------------------------------------------------
 # 9. Start Xvfb
-# ----------------------------------------------------------
-
 log "Checking Xvfb..."
 
 if ! pgrep -f "^Xvfb ${DISPLAY_NUM} " >/dev/null 2>&1; then
@@ -196,7 +172,7 @@ if ! pgrep -f "^Xvfb ${DISPLAY_NUM} " >/dev/null 2>&1; then
         +extension GLX \
         +render \
         -noreset \
-        >/tmp/xvfb.log 2>&1 &
+        >/tmp/xvfb.log 2>&1 </dev/null &
 
     sleep 2
 else
@@ -205,7 +181,6 @@ fi
 
 export DISPLAY="$DISPLAY_NUM"
 
-# Wait for X Server
 X_READY=false
 
 for i in {1..15}; do
@@ -213,7 +188,6 @@ for i in {1..15}; do
         X_READY=true
         break
     fi
-
     sleep 1
 done
 
@@ -222,15 +196,12 @@ done
 
 ok "Xvfb is ready on $DISPLAY_NUM."
 
-# ----------------------------------------------------------
 # 10. Start Openbox
-# ----------------------------------------------------------
-
 log "Checking Openbox..."
 
 if ! pgrep -x openbox >/dev/null 2>&1; then
     nohup env DISPLAY="$DISPLAY_NUM" openbox \
-        >/tmp/openbox.log 2>&1 &
+        >/tmp/openbox.log 2>&1 </dev/null &
 
     sleep 2
 else
@@ -243,74 +214,109 @@ else
     ok "Openbox is running."
 fi
 
-# ----------------------------------------------------------
 # 11. Start x11vnc
-# ----------------------------------------------------------
-
 log "Checking x11vnc..."
 
-if ! ss -lnt | grep -q ":${VNC_PORT} "; then
-    nohup x11vnc \
-        -display "$DISPLAY_NUM" \
-        -forever \
-        -shared \
-        -nopw \
-        -localhost \
-        -rfbport "$VNC_PORT" \
-        -xkb \
-        >/tmp/x11vnc.log 2>&1 &
+X11VNC_RUNNING=false
 
-    sleep 2
-else
+if pgrep -x x11vnc >/dev/null 2>&1 \
+    && port_listening "$VNC_PORT"; then
+    X11VNC_RUNNING=true
     ok "x11vnc already running."
 fi
 
-ss -lnt | grep -q ":${VNC_PORT} " \
-    || fail "x11vnc failed to start. Check /tmp/x11vnc.log."
+if [[ "$X11VNC_RUNNING" != true ]]; then
+    # Remove stale x11vnc processes only when the VNC port is unavailable.
+    if ! port_listening "$VNC_PORT"; then
+        pkill -x x11vnc 2>/dev/null || true
+        sleep 1
+
+        nohup x11vnc \
+            -display "$DISPLAY_NUM" \
+            -forever \
+            -shared \
+            -nopw \
+            -localhost \
+            -rfbport "$VNC_PORT" \
+            -xkb \
+            >/tmp/x11vnc.log 2>&1 </dev/null &
+    else
+        fail "Port $VNC_PORT is occupied but x11vnc is not running."
+    fi
+fi
+
+X11VNC_READY=false
+
+for i in {1..20}; do
+    if pgrep -x x11vnc >/dev/null 2>&1 \
+        && port_listening "$VNC_PORT"; then
+        X11VNC_READY=true
+        break
+    fi
+    sleep 1
+done
+
+[[ "$X11VNC_READY" == true ]] || {
+    tail -30 /tmp/x11vnc.log
+    fail "x11vnc failed to start."
+}
 
 ok "x11vnc is ready on port $VNC_PORT."
 
-# ----------------------------------------------------------
 # 12. Start noVNC / Websockify
-# ----------------------------------------------------------
-
 log "Checking noVNC..."
 
 [[ -f "$NOVNC_WEB/vnc.html" ]] \
     || fail "noVNC web interface not found: $NOVNC_WEB/vnc.html"
 
-if ! ss -lnt | grep -q ":${NOVNC_PORT} "; then
+WEBSOCKIFY_RUNNING=false
+
+if pgrep -af 'websockify.*6080' >/dev/null 2>&1 \
+    && port_listening "$NOVNC_PORT"; then
+    WEBSOCKIFY_RUNNING=true
+    ok "Websockify already running."
+fi
+
+if [[ "$WEBSOCKIFY_RUNNING" != true ]]; then
+    if port_listening "$NOVNC_PORT"; then
+        fail "Port $NOVNC_PORT is occupied by another process."
+    fi
+
     nohup websockify \
         --web="$NOVNC_WEB" \
         "$NOVNC_PORT" \
         "localhost:$VNC_PORT" \
-        >/tmp/websockify.log 2>&1 &
-
-    sleep 2
-else
-    ok "noVNC already running."
+        >/tmp/websockify.log 2>&1 </dev/null &
 fi
 
-ss -lnt | grep -q ":${NOVNC_PORT} " \
-    || fail "noVNC failed to start. Check /tmp/websockify.log."
+NOVNC_READY=false
 
-curl -fsS \
-    "http://localhost:${NOVNC_PORT}/vnc.html" \
-    >/dev/null \
-    || fail "noVNC HTTP check failed."
+for i in {1..20}; do
+    if port_listening "$NOVNC_PORT" \
+        && curl -fsS \
+            "http://127.0.0.1:${NOVNC_PORT}/vnc.html" \
+            >/dev/null; then
+        NOVNC_READY=true
+        break
+    fi
+    sleep 1
+done
+
+[[ "$NOVNC_READY" == true ]] || {
+    tail -30 /tmp/websockify.log
+    fail "noVNC failed to start."
+}
 
 ok "noVNC is ready on port $NOVNC_PORT."
 
-# ----------------------------------------------------------
 # 13. Configure terminal environment
-# ----------------------------------------------------------
-
 log "Configuring terminal environment..."
 
 BASHRC="$HOME/.bashrc"
-PROFILE="$HOME/.profile"
 
-if ! grep -qF "# BEGIN TRAINING_AUTO_ENV" "$BASHRC" 2>/dev/null; then
+touch "$BASHRC"
+
+if ! grep -qF "# BEGIN TRAINING_AUTO_ENV" "$BASHRC"; then
     cat >> "$BASHRC" <<EOF
 
 # BEGIN TRAINING_AUTO_ENV
@@ -320,16 +326,12 @@ export DISPLAY="$DISPLAY_NUM"
 EOF
 fi
 
-# Apply environment to the current setup process.
 export PATH="$VENV_DIR/bin:$PATH"
 export DISPLAY="$DISPLAY_NUM"
 
 ok "Terminal environment configured."
 
-# ----------------------------------------------------------
 # 14. Final verification
-# ----------------------------------------------------------
-
 log "Checking final environment..."
 
 "$PYTHON" -m robot --version
@@ -341,20 +343,19 @@ log "Checking final environment..."
 DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null \
     || fail "X Server unavailable."
 
-ss -lnt | grep -q ":${VNC_PORT} " \
+pgrep -x x11vnc >/dev/null \
+    || fail "x11vnc process is not running."
+
+port_listening "$VNC_PORT" \
     || fail "VNC port unavailable."
 
-ss -lnt | grep -q ":${NOVNC_PORT} " \
+port_listening "$NOVNC_PORT" \
     || fail "noVNC port unavailable."
 
 curl -fsS \
-    "http://localhost:${NOVNC_PORT}/vnc.html" \
+    "http://127.0.0.1:${NOVNC_PORT}/vnc.html" \
     >/dev/null \
     || fail "noVNC HTTP check failed."
-
-# ----------------------------------------------------------
-# 15. Ready
-# ----------------------------------------------------------
 
 ok "=========================================="
 ok "AUTOMATION ENVIRONMENT READY"
