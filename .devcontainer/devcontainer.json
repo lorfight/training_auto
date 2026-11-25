@@ -1,3 +1,4 @@
+
 {
   "name": "Robot Automation Workspace",
   "image": "mcr.microsoft.com/devcontainers/universal:2",
@@ -15,7 +16,6 @@
     }
   },
   "remoteEnv": {
-    "PATH": "/workspaces/training_auto/.venv/bin:${containerEnv:PATH}",
     "DISPLAY": ":1"
   },
   "customizations": {
@@ -25,7 +25,10 @@
       ],
       "settings": {
         "python.terminal.activateEnvironment": false,
-        "python-envs.terminal.autoActivationType": "off"
+        "python-envs.terminal.autoActivationType": "off",
+        "terminal.integrated.env.linux": {
+          "PATH": "/workspaces/training_auto/.venv/bin:${env:PATH}"
+        }
       }
     }
   },
