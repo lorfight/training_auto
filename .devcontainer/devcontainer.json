@@ -1,6 +1,6 @@
-
 {
   "name": "Robot Automation Workspace",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
   "forwardPorts": [6080, 8000],
   "portsAttributes": {
     "6080": {
@@ -10,7 +10,7 @@
     },
     "8000": {
       "label": "Robot Test Reports",
-      "onAutoForward": "openBrowser",
+      "onAutoForward": "notify",
       "visibility": "private"
     }
   },
@@ -18,7 +18,11 @@
     "vscode": {
       "extensions": [
         "d-biehl.robotcode"
-      ]
+      ],
+      "settings": {
+        "python.terminal.activateEnvironment": false,
+        "python-envs.terminal.autoActivationType": "off"
+      }
     }
   },
   "postCreateCommand": "bash .devcontainer/setup.sh",
